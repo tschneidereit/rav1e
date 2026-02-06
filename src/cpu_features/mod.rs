@@ -16,6 +16,10 @@ cfg_if::cfg_if! {
     #[macro_use]
     mod aarch64;
     pub use aarch64::*;
+  } else if #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))] {
+    #[macro_use]
+    mod wasm32;
+    pub use wasm32::*;
   } else {
     mod rust;
     pub use rust::*;

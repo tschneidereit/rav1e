@@ -1,4 +1,4 @@
-// Copyright (c) 2019, The rav1e contributors. All rights reserved
+// Copyright (c) 2024, The rav1e contributors. All rights reserved
 //
 // This source code is subject to the terms of the BSD 2 Clause License and
 // the Alliance for Open Media Patent License 1.0. If the BSD 2 Clause License
@@ -7,14 +7,10 @@
 // Media Patent License 1.0 was not distributed with this source code in the
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
-#[cfg(nasm_x86_64)]
-pub mod x86;
+//! WebAssembly SIMD128 accelerated implementations.
+//!
+//! This module provides SIMD-accelerated versions of encoder functions
+//! using the wasm32 SIMD128 intrinsics available through `std::arch::wasm32`.
 
-#[cfg(asm_neon)]
-pub mod aarch64;
-
-#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
-pub mod wasm32;
-
-#[cfg(any(nasm_x86_64, asm_neon))]
-pub mod shared;
+pub mod dist;
+mod simd_helpers;

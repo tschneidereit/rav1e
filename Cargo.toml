@@ -27,6 +27,7 @@ unstable = []
 channel-api = ["crossbeam"]
 decode_test = ["aom-sys"]
 decode_test_dav1d = ["dav1d-sys"]
+wasm_decode_test = []
 binaries = [
   "ivf",
   "y4m",

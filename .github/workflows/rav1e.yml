@@ -98,6 +98,48 @@ jobs:
           --target wasm32-wasip2
           --no-default-features
 
+  wasi-decode-test:
+    runs-on: ubuntu-24.04
+    needs: [rustfmt-clippy, msrv]
+
+    env:
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install wasmtime
+        uses: taiki-e/install-action@wasmtime
+
+      - name: Install dav1d
+        run: |
+          sudo apt update
+          sudo apt install -y dav1d
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasip2
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build rav1e for wasm32-wasip2
+        run: >
+          cargo build
+          --target wasm32-wasip2
+          --release
+          --no-default-features
+          --features binaries
+
+      - name: Run wasm encode/decode tests
+        run: >
+          cargo test
+          --release
+          --features wasm_decode_test
+          --test wasm_encode_decode
+          --
+          --test-threads=1
+
   build-unix:
     strategy:
       matrix:
