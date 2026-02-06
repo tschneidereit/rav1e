@@ -10,3 +10,4 @@
 //! SIMD-accelerated transform functions for wasm32.
 
 pub mod forward;
+pub mod inverse;

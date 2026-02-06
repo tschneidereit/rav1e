@@ -15,6 +15,7 @@
 pub mod cdef;
 pub mod dist;
 pub mod mc;
+pub mod predict;
 pub mod quantize;
 mod simd_helpers;
 pub mod transform;

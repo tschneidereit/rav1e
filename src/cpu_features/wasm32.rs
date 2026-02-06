@@ -12,19 +12,20 @@ use arg_enum_proc_macro::ArgEnum;
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, ArgEnum, Default)]
 pub enum CpuFeatureLevel {
   RUST,
-  #[default]
   SIMD128,
+  #[default]
+  RELAXED_SIMD,
 }
 
 impl CpuFeatureLevel {
   #[cfg(test)]
   pub(crate) const fn all() -> &'static [Self] {
     use CpuFeatureLevel::*;
-    &[RUST, SIMD128]
+    &[RUST, SIMD128, RELAXED_SIMD]
   }
 
   pub const fn len() -> usize {
-    CpuFeatureLevel::SIMD128 as usize + 1
+    CpuFeatureLevel::RELAXED_SIMD as usize + 1
   }
 
   #[inline(always)]
@@ -53,7 +54,7 @@ macro_rules! cpu_function_lookup_table {
         out[$key as usize] = $value;
         set[$key as usize] = true;
       )*
-      cpu_function_lookup_table!(waterfall_cpu_features(out, set, [SIMD128]));
+      cpu_function_lookup_table!(waterfall_cpu_features(out, set, [SIMD128, RELAXED_SIMD]));
       out
     };
   };

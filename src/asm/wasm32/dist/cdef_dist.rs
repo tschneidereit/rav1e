@@ -141,29 +141,99 @@ unsafe fn cdef_dist_kernel_simd128(
   src: *const u8, src_stride: isize, dst: *const u8, dst_stride: isize,
   w: usize, h: usize,
 ) -> (u32, u32, u32) {
-  let mut sum_s: u32 = 0;
-  let mut sum_d: u32 = 0;
-  let mut sum_s2: u32 = 0;
-  let mut sum_d2: u32 = 0;
-  let mut sum_sd: u32 = 0;
+  use core::arch::wasm32::*;
+
+  // Process rows, accumulating in vector registers
+  let mut sum_s_vec = i32x4_splat(0);
+  let mut sum_d_vec = i32x4_splat(0);
+  let mut sum_s2_vec = i32x4_splat(0);
+  let mut sum_d2_vec = i32x4_splat(0);
+  let mut sum_sd_vec = i32x4_splat(0);
 
   let mut src_ptr = src;
   let mut dst_ptr = dst;
 
-  for _y in 0..h {
-    for x in 0..w {
-      let s = *src_ptr.add(x) as u32;
-      let d = *dst_ptr.add(x) as u32;
+  // For widths of 8, we can process a full row with one 128-bit load (8 bytes)
+  // For widths of 4, we can process a row with partial load
+  if w == 8 {
+    for _y in 0..h {
+      // Load 8 bytes
+      let s_raw = v128_load64_zero(src_ptr as *const u64);
+      let d_raw = v128_load64_zero(dst_ptr as *const u64);
 
-      sum_s += s;
-      sum_d += d;
-      sum_s2 += s * s;
-      sum_d2 += d * d;
-      sum_sd += s * d;
+      // Extend to i16 (low 8 bytes)
+      let s_16 = i16x8_extend_low_u8x16(s_raw);
+      let d_16 = i16x8_extend_low_u8x16(d_raw);
+
+      // Extend to i32 for accumulation
+      let s_lo = i32x4_extend_low_i16x8(s_16);
+      let s_hi = i32x4_extend_high_i16x8(s_16);
+      let d_lo = i32x4_extend_low_i16x8(d_16);
+      let d_hi = i32x4_extend_high_i16x8(d_16);
+
+      // Accumulate sums
+      sum_s_vec = i32x4_add(sum_s_vec, i32x4_add(s_lo, s_hi));
+      sum_d_vec = i32x4_add(sum_d_vec, i32x4_add(d_lo, d_hi));
+
+      // Accumulate squared sums
+      sum_s2_vec = i32x4_add(sum_s2_vec, i32x4_add(i32x4_mul(s_lo, s_lo), i32x4_mul(s_hi, s_hi)));
+      sum_d2_vec = i32x4_add(sum_d2_vec, i32x4_add(i32x4_mul(d_lo, d_lo), i32x4_mul(d_hi, d_hi)));
+      sum_sd_vec = i32x4_add(sum_sd_vec, i32x4_add(i32x4_mul(s_lo, d_lo), i32x4_mul(s_hi, d_hi)));
+
+      src_ptr = src_ptr.offset(src_stride);
+      dst_ptr = dst_ptr.offset(dst_stride);
     }
-    src_ptr = src_ptr.offset(src_stride);
-    dst_ptr = dst_ptr.offset(dst_stride);
+  } else if w == 4 {
+    for _y in 0..h {
+      // Load 4 bytes as i32x4
+      let s = i32x4(
+        *src_ptr as i32, *src_ptr.add(1) as i32,
+        *src_ptr.add(2) as i32, *src_ptr.add(3) as i32
+      );
+      let d = i32x4(
+        *dst_ptr as i32, *dst_ptr.add(1) as i32,
+        *dst_ptr.add(2) as i32, *dst_ptr.add(3) as i32
+      );
+
+      sum_s_vec = i32x4_add(sum_s_vec, s);
+      sum_d_vec = i32x4_add(sum_d_vec, d);
+      sum_s2_vec = i32x4_add(sum_s2_vec, i32x4_mul(s, s));
+      sum_d2_vec = i32x4_add(sum_d2_vec, i32x4_mul(d, d));
+      sum_sd_vec = i32x4_add(sum_sd_vec, i32x4_mul(s, d));
+
+      src_ptr = src_ptr.offset(src_stride);
+      dst_ptr = dst_ptr.offset(dst_stride);
+    }
+  } else {
+    // Generic fallback for other widths
+    for _y in 0..h {
+      for x in 0..w {
+        let s = *src_ptr.add(x) as i32;
+        let d = *dst_ptr.add(x) as i32;
+
+        // Use scalar add to first lane
+        sum_s_vec = i32x4_replace_lane::<0>(sum_s_vec, i32x4_extract_lane::<0>(sum_s_vec) + s);
+        sum_d_vec = i32x4_replace_lane::<0>(sum_d_vec, i32x4_extract_lane::<0>(sum_d_vec) + d);
+        sum_s2_vec = i32x4_replace_lane::<0>(sum_s2_vec, i32x4_extract_lane::<0>(sum_s2_vec) + s * s);
+        sum_d2_vec = i32x4_replace_lane::<0>(sum_d2_vec, i32x4_extract_lane::<0>(sum_d2_vec) + d * d);
+        sum_sd_vec = i32x4_replace_lane::<0>(sum_sd_vec, i32x4_extract_lane::<0>(sum_sd_vec) + s * d);
+      }
+      src_ptr = src_ptr.offset(src_stride);
+      dst_ptr = dst_ptr.offset(dst_stride);
+    }
   }
+
+  // Horizontal sum from vectors
+  let sum_s = (i32x4_extract_lane::<0>(sum_s_vec) + i32x4_extract_lane::<1>(sum_s_vec)
+    + i32x4_extract_lane::<2>(sum_s_vec) + i32x4_extract_lane::<3>(sum_s_vec)) as u32;
+  let sum_d = (i32x4_extract_lane::<0>(sum_d_vec) + i32x4_extract_lane::<1>(sum_d_vec)
+    + i32x4_extract_lane::<2>(sum_d_vec) + i32x4_extract_lane::<3>(sum_d_vec)) as u32;
+  let sum_s2 = (i32x4_extract_lane::<0>(sum_s2_vec) + i32x4_extract_lane::<1>(sum_s2_vec)
+    + i32x4_extract_lane::<2>(sum_s2_vec) + i32x4_extract_lane::<3>(sum_s2_vec)) as u32;
+  let sum_d2 = (i32x4_extract_lane::<0>(sum_d2_vec) + i32x4_extract_lane::<1>(sum_d2_vec)
+    + i32x4_extract_lane::<2>(sum_d2_vec) + i32x4_extract_lane::<3>(sum_d2_vec)) as u32;
+  let sum_sd = (i32x4_extract_lane::<0>(sum_sd_vec) + i32x4_extract_lane::<1>(sum_sd_vec)
+    + i32x4_extract_lane::<2>(sum_sd_vec) + i32x4_extract_lane::<3>(sum_sd_vec)) as u32;
 
   let sse = sum_d2 + sum_s2 - 2 * sum_sd;
 
@@ -197,11 +267,14 @@ unsafe fn cdef_dist_kernel_hbd_simd128(
   src: *const u16, src_stride: isize, dst: *const u16, dst_stride: isize,
   w: usize, h: usize,
 ) -> (u32, u32, u32) {
-  let stride_elem = src_stride / 2;
-  let dst_stride_elem = dst_stride / 2;
+  use core::arch::wasm32::*;
 
-  let mut sum_s: u32 = 0;
-  let mut sum_d: u32 = 0;
+  let stride_elem = (src_stride / 2) as usize;
+  let dst_stride_elem = (dst_stride / 2) as usize;
+
+  // Use i64x2 for accumulating squared sums to avoid overflow
+  let mut sum_s_vec = i32x4_splat(0);
+  let mut sum_d_vec = i32x4_splat(0);
   let mut sum_s2: u64 = 0;
   let mut sum_d2: u64 = 0;
   let mut sum_sd: u64 = 0;
@@ -209,20 +282,79 @@ unsafe fn cdef_dist_kernel_hbd_simd128(
   let mut src_ptr = src;
   let mut dst_ptr = dst;
 
-  for _y in 0..h {
-    for x in 0..w {
-      let s = *src_ptr.add(x) as u32;
-      let d = *dst_ptr.add(x) as u32;
+  if w == 8 {
+    for _y in 0..h {
+      // Load 8 i16 values (128 bits)
+      let s = v128_load(src_ptr as *const v128);
+      let d = v128_load(dst_ptr as *const v128);
 
-      sum_s += s;
-      sum_d += d;
-      sum_s2 += (s * s) as u64;
-      sum_d2 += (d * d) as u64;
-      sum_sd += (s * d) as u64;
+      // Extend to i32 for sums
+      let s_lo = i32x4_extend_low_i16x8(s);
+      let s_hi = i32x4_extend_high_i16x8(s);
+      let d_lo = i32x4_extend_low_i16x8(d);
+      let d_hi = i32x4_extend_high_i16x8(d);
+
+      sum_s_vec = i32x4_add(sum_s_vec, i32x4_add(s_lo, s_hi));
+      sum_d_vec = i32x4_add(sum_d_vec, i32x4_add(d_lo, d_hi));
+
+      // Compute squared sums with scalar to avoid overflow in 32-bit lanes
+      for x in 0..8 {
+        let sv = *src_ptr.add(x) as u64;
+        let dv = *dst_ptr.add(x) as u64;
+        sum_s2 += sv * sv;
+        sum_d2 += dv * dv;
+        sum_sd += sv * dv;
+      }
+
+      src_ptr = src_ptr.add(stride_elem);
+      dst_ptr = dst_ptr.add(dst_stride_elem);
     }
-    src_ptr = src_ptr.offset(stride_elem);
-    dst_ptr = dst_ptr.offset(dst_stride_elem);
+  } else if w == 4 {
+    for _y in 0..h {
+      let s = i32x4(
+        *src_ptr as i32, *src_ptr.add(1) as i32,
+        *src_ptr.add(2) as i32, *src_ptr.add(3) as i32
+      );
+      let d = i32x4(
+        *dst_ptr as i32, *dst_ptr.add(1) as i32,
+        *dst_ptr.add(2) as i32, *dst_ptr.add(3) as i32
+      );
+
+      sum_s_vec = i32x4_add(sum_s_vec, s);
+      sum_d_vec = i32x4_add(sum_d_vec, d);
+
+      for x in 0..4 {
+        let sv = *src_ptr.add(x) as u64;
+        let dv = *dst_ptr.add(x) as u64;
+        sum_s2 += sv * sv;
+        sum_d2 += dv * dv;
+        sum_sd += sv * dv;
+      }
+
+      src_ptr = src_ptr.add(stride_elem);
+      dst_ptr = dst_ptr.add(dst_stride_elem);
+    }
+  } else {
+    for _y in 0..h {
+      for x in 0..w {
+        let s = *src_ptr.add(x) as u64;
+        let d = *dst_ptr.add(x) as u64;
+
+        sum_s_vec = i32x4_replace_lane::<0>(sum_s_vec, i32x4_extract_lane::<0>(sum_s_vec) + s as i32);
+        sum_d_vec = i32x4_replace_lane::<0>(sum_d_vec, i32x4_extract_lane::<0>(sum_d_vec) + d as i32);
+        sum_s2 += s * s;
+        sum_d2 += d * d;
+        sum_sd += s * d;
+      }
+      src_ptr = src_ptr.add(stride_elem);
+      dst_ptr = dst_ptr.add(dst_stride_elem);
+    }
   }
+
+  let sum_s = (i32x4_extract_lane::<0>(sum_s_vec) + i32x4_extract_lane::<1>(sum_s_vec)
+    + i32x4_extract_lane::<2>(sum_s_vec) + i32x4_extract_lane::<3>(sum_s_vec)) as u32;
+  let sum_d = (i32x4_extract_lane::<0>(sum_d_vec) + i32x4_extract_lane::<1>(sum_d_vec)
+    + i32x4_extract_lane::<2>(sum_d_vec) + i32x4_extract_lane::<3>(sum_d_vec)) as u32;
 
   let sse = (sum_d2 + sum_s2 - 2 * sum_sd) as u32;
 
