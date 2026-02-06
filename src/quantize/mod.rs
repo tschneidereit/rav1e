@@ -14,6 +14,8 @@ mod tables;
 cfg_if::cfg_if! {
   if #[cfg(nasm_x86_64)] {
     pub use crate::asm::x86::quantize::*;
+  } else if #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))] {
+    pub use crate::asm::wasm32::quantize::*;
   } else {
     pub use self::rust::*;
   }

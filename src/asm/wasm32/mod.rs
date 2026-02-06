@@ -12,6 +12,9 @@
 //! This module provides SIMD-accelerated versions of encoder functions
 //! using the wasm32 SIMD128 intrinsics available through `std::arch::wasm32`.
 
+pub mod cdef;
 pub mod dist;
+pub mod mc;
+pub mod quantize;
 mod simd_helpers;
 pub mod transform;
