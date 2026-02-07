@@ -9,12 +9,15 @@
 
 /// For classifying the number of rows and columns in a transform. Used to
 /// select the operations to perform for different vector lengths.
+/// Only used by x86/aarch64 assembly implementations.
+#[cfg(any(nasm_x86_64, asm_neon))]
 #[derive(Debug, Clone, Copy)]
 pub enum SizeClass1D {
   X4,
   X8UP,
 }
 
+#[cfg(any(nasm_x86_64, asm_neon))]
 impl SizeClass1D {
   #[inline]
   pub fn from_length(len: usize) -> Self {
@@ -34,6 +37,8 @@ pub fn cast<const N: usize, T>(x: &[T]) -> &[T; N] {
   unsafe { &*(&x[..N] as *const [T] as *const [T; N]) }
 }
 
+/// Used by x86/aarch64 assembly implementations.
+#[cfg(any(nasm_x86_64, asm_neon))]
 pub fn cast_mut<const N: usize, T>(x: &mut [T]) -> &mut [T; N] {
   // SAFETY: we perform a bounds check with [..N],
   // so casting to *mut [T; N] is valid because the bounds

@@ -20,9 +20,6 @@ use crate::util::{CastFromPrimitive, Pixel};
 
 use core::arch::wasm32::*;
 
-// Re-export pad_into_tmp16 from rust module for use by rest of crate
-pub use rust::pad_into_tmp16;
-
 // Division table: multiply by 3*5*7*8/n instead of dividing by n
 const CDEF_DIV_TABLE: [i32; 9] = [0, 840, 420, 280, 210, 168, 140, 120, 105];
 
@@ -70,7 +67,6 @@ fn cdef_find_dir_simd_u8<T: Pixel>(
   
   // Load and process the 8x8 block
   // Using SIMD to load rows and compute x = (p >> coeff_shift) - 128
-  let offset = i32x4_splat(128);
   let shift = coeff_shift as u32;
   
   for i in 0..8 {

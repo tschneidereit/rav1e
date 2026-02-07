@@ -307,39 +307,6 @@ fn pred_h_simd<T: Pixel>(
 }
 
 // ============================================================================
-// Smooth Prediction - Compiler-friendly implementation
-// ============================================================================
-
-/// Smooth prediction (both horizontal and vertical smoothing)
-/// Uses scalar code structured for auto-vectorization by the compiler
-#[inline(always)]
-fn pred_smooth_simd<T: Pixel>(
-  output: &mut PlaneRegionMut<'_, T>, above: &[T], left: &[T], width: usize,
-  height: usize,
-) {
-  // Delegate to Rust implementation which compiles well with SIMD128
-  rust::pred_smooth(output, above, left, width, height);
-}
-
-/// Smooth vertical prediction
-#[inline(always)]
-fn pred_smooth_v_simd<T: Pixel>(
-  output: &mut PlaneRegionMut<'_, T>, above: &[T], left: &[T], width: usize,
-  height: usize,
-) {
-  rust::pred_smooth_v(output, above, left, width, height);
-}
-
-/// Smooth horizontal prediction
-#[inline(always)]
-fn pred_smooth_h_simd<T: Pixel>(
-  output: &mut PlaneRegionMut<'_, T>, above: &[T], left: &[T], width: usize,
-  height: usize,
-) {
-  rust::pred_smooth_h(output, above, left, width, height);
-}
-
-// ============================================================================
 // Paeth Prediction
 // ============================================================================
 

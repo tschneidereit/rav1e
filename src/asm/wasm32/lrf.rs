@@ -13,9 +13,9 @@ use crate::cpu_features::CpuFeatureLevel;
 use crate::frame::PlaneSlice;
 use crate::lrf::rust;
 use crate::lrf::{
-  SGRPROJ_MTABLE_BITS, SGRPROJ_RECIP_BITS, SGRPROJ_RST_BITS, SGRPROJ_SGR_BITS,
+  SGRPROJ_MTABLE_BITS, SGRPROJ_RECIP_BITS, SGRPROJ_SGR_BITS,
 };
-use crate::util::{CastFromPrimitive, Pixel};
+use crate::util::Pixel;
 use std::arch::wasm32::*;
 
 /// Compute sum from integral image using SIMD for 4 consecutive x positions
@@ -104,9 +104,6 @@ unsafe fn sgrproj_sum_finish_simd<const BD: usize>(
   let a = u32x4(a0, a1, a2, a3);
 
   // b = ((1 << SGRPROJ_SGR_BITS) - a) * sum * one_over_n
-  let sgr_bits_val = i32x4_splat(1i32 << SGRPROJ_SGR_BITS);
-  let one_minus_a = i32x4_sub(sgr_bits_val, a);
-  let one_over_n_vec = i32x4_splat(one_over_n as i32);
 
   // Need to compute (1-a) * sum * one_over_n, which can overflow i32
   // Do scalar computation for safety

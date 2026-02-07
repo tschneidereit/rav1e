@@ -458,7 +458,6 @@ fn inverse_transform_add_4x4_idtx_simd_hbd<T: Pixel>(
 fn inverse_transform_add_4x4_vdct_simd_hbd<T: Pixel>(
   input: &[T::Coeff], output: &mut PlaneRegionMut<'_, T>, bd: usize,
 ) {
-  let range = (bd + 8) as i32;
   let sqrt2 = i32x4_splat(SQRT2);
   let round12 = i32x4_splat(1 << 11);
   
@@ -543,8 +542,6 @@ fn inverse_transform_add_4x4_vdct_simd_hbd<T: Pixel>(
 fn inverse_transform_add_4x4_adst_dct_simd_hbd<T: Pixel>(
   input: &[T::Coeff], output: &mut PlaneRegionMut<'_, T>, bd: usize,
 ) {
-  let range = (bd + 8) as i32;
-  
   // Load columns
   let col0 = i32x4(
     i32::cast_from(input[0]), i32::cast_from(input[1]),

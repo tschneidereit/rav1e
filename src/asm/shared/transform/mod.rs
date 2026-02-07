@@ -8,6 +8,7 @@
 // PATENTS file, you can obtain it at www.aomedia.org/license/patent.
 
 pub mod forward;
+#[cfg(any(nasm_x86_64, asm_neon))]
 pub mod inverse;
 
 use crate::transform::*;

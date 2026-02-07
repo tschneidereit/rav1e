@@ -163,7 +163,6 @@ unsafe fn weighted_sse_simd128(
         let d = v128_load(dst_ptr as *const v128);
 
         // Convert to i16 and compute differences
-        let zero = i8x16_splat(0);
         let s_lo = i16x8_extend_low_u8x16(s);
         let s_hi = i16x8_extend_high_u8x16(s);
         let d_lo = i16x8_extend_low_u8x16(d);
