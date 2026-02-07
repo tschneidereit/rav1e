@@ -14,6 +14,7 @@
 
 pub mod cdef;
 pub mod dist;
+pub mod lrf;
 pub mod mc;
 pub mod predict;
 pub mod quantize;

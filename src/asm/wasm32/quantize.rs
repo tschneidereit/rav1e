@@ -25,13 +25,19 @@ pub fn dequantize<T: Coefficient>(
   tx_size: TxSize, bit_depth: usize, dc_delta_q: i8, ac_delta_q: i8,
   cpu: CpuFeatureLevel,
 ) {
-  // Use SIMD for i16 coefficients (8-bit pixel depth)
-  if cpu >= CpuFeatureLevel::SIMD128 && size_of::<T>() == 2 {
-    dequantize_simd_i16(
-      qindex, coeffs, eob, rcoeffs, tx_size, bit_depth, dc_delta_q, ac_delta_q,
-    );
+  if cpu >= CpuFeatureLevel::SIMD128 {
+    if size_of::<T>() == 2 {
+      // SIMD for i16 coefficients (8-bit pixel depth)
+      dequantize_simd_i16(
+        qindex, coeffs, eob, rcoeffs, tx_size, bit_depth, dc_delta_q, ac_delta_q,
+      );
+    } else {
+      // SIMD for i32 coefficients (HBD / 10-bit pixel depth)
+      dequantize_simd_i32(
+        qindex, coeffs, eob, rcoeffs, tx_size, bit_depth, dc_delta_q, ac_delta_q,
+      );
+    }
   } else {
-    // Fallback for i32 coefficients (HBD) or without SIMD
     rust::dequantize(
       qindex, coeffs, eob, rcoeffs, tx_size, bit_depth, dc_delta_q, ac_delta_q,
       cpu,
@@ -119,6 +125,65 @@ fn dequantize_simd_i16<T: Coefficient>(
       // Pack and store (only lower 64 bits used)
       let result = i16x8_narrow_i32x4(result_32, i32x4_splat(0));
       v128_store64_lane::<0>(result, rcoeffs_ptr.add(i) as *mut u64);
+    }
+    i += 4;
+  }
+
+  // Scalar remainder
+  while i < len {
+    let coeff = i32::cast_from(coeffs[i]);
+    let result = (coeff * ac_quant + ((coeff >> 31) & offset)) >> log_tx_scale;
+    rcoeffs[i].write(T::cast_from(result));
+    i += 1;
+  }
+}
+
+/// SIMD dequantize for i32 coefficients (High Bit Depth / 10-bit)
+#[inline(always)]
+fn dequantize_simd_i32<T: Coefficient>(
+  qindex: u8, coeffs: &[T], _eob: u16, rcoeffs: &mut [MaybeUninit<T>],
+  tx_size: TxSize, bit_depth: usize, dc_delta_q: i8, ac_delta_q: i8,
+) {
+  let log_tx_scale = get_log_tx_scale(tx_size) as i32;
+  let offset = (1 << log_tx_scale) - 1;
+
+  let dc_quant = dc_q(qindex, dc_delta_q, bit_depth).get() as i32;
+  let ac_quant = ac_q(qindex, ac_delta_q, bit_depth).get() as i32;
+
+  // Process DC coefficient (first element) 
+  let dc_coeff = i32::cast_from(coeffs[0]);
+  let dc_result = (dc_coeff * dc_quant + ((dc_coeff >> 31) & offset)) >> log_tx_scale;
+  rcoeffs[0].write(T::cast_from(dc_result));
+
+  let len = coeffs.len().min(rcoeffs.len());
+  if len <= 1 {
+    return;
+  }
+
+  // Convert to pointers for SIMD processing
+  let coeffs_ptr = coeffs.as_ptr() as *const i32;
+  let rcoeffs_ptr = rcoeffs.as_mut_ptr() as *mut i32;
+
+  let ac_quant_vec = i32x4_splat(ac_quant);
+  let offset_vec = i32x4_splat(offset);
+  
+  let mut i = 1;
+
+  // Process 4 i32 coefficients at a time
+  while i + 4 <= len {
+    unsafe {
+      // Load 4 i32 coefficients
+      let coeffs_v = v128_load(coeffs_ptr.add(i) as *const v128);
+      
+      // result = (c * quant + ((c >> 31) & offset)) >> log_tx_scale
+      let sign = i32x4_shr(coeffs_v, 31);
+      let offset_masked = v128_and(sign, offset_vec);
+      let prod = i32x4_mul(coeffs_v, ac_quant_vec);
+      let sum = i32x4_add(prod, offset_masked);
+      let result = i32x4_shr(sum, log_tx_scale as u32);
+      
+      // Store result
+      v128_store(rcoeffs_ptr.add(i) as *mut v128, result);
     }
     i += 4;
   }

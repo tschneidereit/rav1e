@@ -150,7 +150,7 @@ fn cdef_find_dir_simd_u8<T: Pixel>(
 
 /// Apply CDEF filtering to a block.
 ///
-/// Currently uses Rust fallback implementation.
+/// SIMD optimized for blocks with all edges available.
 #[inline(always)]
 pub unsafe fn cdef_filter_block<T: Pixel, U: Pixel>(
   dst: &mut PlaneRegionMut<'_, T>, input: *const U, istride: isize,
@@ -158,10 +158,232 @@ pub unsafe fn cdef_filter_block<T: Pixel, U: Pixel>(
   bit_depth: usize, xdec: usize, ydec: usize, edges: u8,
   cpu: CpuFeatureLevel,
 ) {
-  rust::cdef_filter_block(
-    dst, input, istride, pri_strength, sec_strength, dir, damping,
-    bit_depth, xdec, ydec, edges, cpu,
-  )
+  // Use SIMD for the common case: all edges available, SIMD128 support
+  if cpu >= CpuFeatureLevel::SIMD128 && edges == crate::cdef::CDEF_HAVE_ALL {
+    cdef_filter_block_simd::<T, U>(
+      dst, input, istride, pri_strength, sec_strength, dir, damping,
+      bit_depth, xdec, ydec,
+    );
+  } else {
+    rust::cdef_filter_block(
+      dst, input, istride, pri_strength, sec_strength, dir, damping,
+      bit_depth, xdec, ydec, edges, cpu,
+    )
+  }
+}
+
+/// Compute msb (most significant bit position) - equivalent to floor(log2(x)) for x > 0
+#[inline(always)]
+fn msb(x: i32) -> i32 {
+  debug_assert!(x > 0);
+  31 - x.leading_zeros() as i32
+}
+
+/// SIMD constrain function - processes 4 values at once
+/// Returns tap * constrain(diff, threshold, damping) for 4 differences
+#[inline(always)]
+unsafe fn constrain_simd(diff: v128, threshold: i32, shift: i32, tap: i32) -> v128 {
+  if threshold == 0 {
+    return i32x4_splat(0);
+  }
+  
+  let threshold_vec = i32x4_splat(threshold);
+  let tap_vec = i32x4_splat(tap);
+  
+  // abs_diff = |diff|
+  let abs_diff = i32x4_abs(diff);
+  
+  // shifted = abs_diff >> shift
+  let shifted = i32x4_shr(abs_diff, shift as u32);
+  
+  // magnitude = clamp(threshold - shifted, 0, abs_diff)
+  let sub = i32x4_sub(threshold_vec, shifted);
+  let zero = i32x4_splat(0);
+  let magnitude = i32x4_min(i32x4_max(sub, zero), abs_diff);
+  
+  // Apply sign: if diff < 0, negate magnitude
+  let neg_magnitude = i32x4_neg(magnitude);
+  let is_negative = i32x4_lt(diff, zero);
+  let signed = v128_bitselect(neg_magnitude, magnitude, is_negative);
+  
+  // Return tap * signed
+  i32x4_mul(tap_vec, signed)
+}
+
+/// SIMD implementation of cdef_filter_block for blocks with all edges available
+#[inline(always)]
+unsafe fn cdef_filter_block_simd<T: Pixel, U: Pixel>(
+  dst: &mut PlaneRegionMut<'_, T>, input: *const U, istride: isize,
+  pri_strength: i32, sec_strength: i32, dir: usize, damping: i32,
+  bit_depth: usize, xdec: usize, ydec: usize,
+) {
+  let xsize = 8 >> xdec;
+  let ysize = 8 >> ydec;
+  let coeff_shift = bit_depth - 8;
+  
+  // Tap weights based on primary strength
+  let cdef_pri_taps = [[4, 2], [3, 3]];
+  let cdef_sec_taps = [[2, 1], [2, 1]];
+  let tap_idx = ((pri_strength >> coeff_shift) & 1) as usize;
+  let pri_taps = cdef_pri_taps[tap_idx];
+  let sec_taps = cdef_sec_taps[tap_idx];
+  
+  // Precompute shifts for constrain function (msb only needs threshold)
+  let pri_shift = if pri_strength > 0 { 
+    std::cmp::max(0, damping - msb(pri_strength)) 
+  } else { 0 };
+  let sec_shift = if sec_strength > 0 { 
+    std::cmp::max(0, damping - msb(sec_strength)) 
+  } else { 0 };
+  
+  // Direction offsets (precomputed for the selected direction)
+  let cdef_directions: [[isize; 2]; 8] = [
+    [-1 * istride + 1, -2 * istride + 2],
+    [0 * istride + 1, -1 * istride + 2],
+    [0 * istride + 1, 0 * istride + 2],
+    [0 * istride + 1, 1 * istride + 2],
+    [1 * istride + 1, 2 * istride + 2],
+    [1 * istride + 0, 2 * istride + 1],
+    [1 * istride + 0, 2 * istride + 0],
+    [1 * istride + 0, 2 * istride - 1],
+  ];
+  
+  let cdef_very_large = crate::cdef::CDEF_VERY_LARGE as i32;
+  let very_large_vec = i32x4_splat(cdef_very_large);
+  
+  for i in 0..ysize {
+    let row_base = input.offset((i as isize) * istride);
+    let mut j = 0;
+    
+    // Process 4 pixels at a time with SIMD
+    while j + 4 <= xsize {
+      // Load 4 center pixels
+      let x = i32x4(
+        i32::cast_from(*row_base.add(j)),
+        i32::cast_from(*row_base.add(j + 1)),
+        i32::cast_from(*row_base.add(j + 2)),
+        i32::cast_from(*row_base.add(j + 3)),
+      );
+      
+      let mut sum = i32x4_splat(0);
+      let mut max = x;
+      let mut min = x;
+      
+      // Process both tap levels (k=0 and k=1)
+      for k in 0..2 {
+        let pri_dir = cdef_directions[dir][k];
+        let sec_dir1 = cdef_directions[(dir + 2) & 7][k];
+        let sec_dir2 = cdef_directions[(dir + 6) & 7][k];
+        
+        // Primary direction neighbors (2 neighbors)
+        for &offset in &[pri_dir, -pri_dir] {
+          let p = i32x4(
+            i32::cast_from(*row_base.offset(j as isize + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 1 + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 2 + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 3 + offset)),
+          );
+          
+          let diff = i32x4_sub(p, x);
+          sum = i32x4_add(sum, constrain_simd(diff, pri_strength, pri_shift, pri_taps[k]));
+          
+          // Update min/max, excluding CDEF_VERY_LARGE
+          let is_valid = i32x4_ne(p, very_large_vec);
+          max = v128_bitselect(i32x4_max(max, p), max, is_valid);
+          min = i32x4_min(min, p);
+        }
+        
+        // Secondary direction neighbors (4 neighbors)
+        for &offset in &[sec_dir1, -sec_dir1, sec_dir2, -sec_dir2] {
+          let s = i32x4(
+            i32::cast_from(*row_base.offset(j as isize + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 1 + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 2 + offset)),
+            i32::cast_from(*row_base.offset(j as isize + 3 + offset)),
+          );
+          
+          // Update min/max, excluding CDEF_VERY_LARGE
+          let is_valid = i32x4_ne(s, very_large_vec);
+          max = v128_bitselect(i32x4_max(max, s), max, is_valid);
+          min = i32x4_min(min, s);
+          
+          let diff = i32x4_sub(s, x);
+          sum = i32x4_add(sum, constrain_simd(diff, sec_strength, sec_shift, sec_taps[k]));
+        }
+      }
+      
+      // v = x + ((8 + sum - (sum < 0)) >> 4)
+      let eight = i32x4_splat(8);
+      let is_neg = i32x4_lt(sum, i32x4_splat(0));
+      let neg_adj = v128_and(is_neg, i32x4_splat(1));
+      let adjusted = i32x4_sub(i32x4_add(eight, sum), neg_adj);
+      let shifted = i32x4_shr(adjusted, 4);
+      let v = i32x4_add(x, shifted);
+      
+      // Clamp to [min, max]
+      let clamped = i32x4_min(i32x4_max(v, min), max);
+      
+      // Store results
+      dst[i][j] = T::cast_from(i32x4_extract_lane::<0>(clamped) as u32);
+      dst[i][j + 1] = T::cast_from(i32x4_extract_lane::<1>(clamped) as u32);
+      dst[i][j + 2] = T::cast_from(i32x4_extract_lane::<2>(clamped) as u32);
+      dst[i][j + 3] = T::cast_from(i32x4_extract_lane::<3>(clamped) as u32);
+      
+      j += 4;
+    }
+    
+    // Handle remaining pixels with scalar code
+    while j < xsize {
+      let ptr_in = row_base.add(j);
+      let x = i32::cast_from(*ptr_in);
+      let mut sum: i32 = 0;
+      let mut max = x;
+      let mut min = x;
+      
+      for k in 0..2 {
+        let pri_dir = cdef_directions[dir][k];
+        let sec_dir1 = cdef_directions[(dir + 2) & 7][k];
+        let sec_dir2 = cdef_directions[(dir + 6) & 7][k];
+        
+        // Primary neighbors
+        for &offset in &[pri_dir, -pri_dir] {
+          let p = i32::cast_from(*ptr_in.offset(offset));
+          let diff = p - x;
+          sum += pri_taps[k] * constrain_scalar(diff, pri_strength, pri_shift);
+          if p != cdef_very_large {
+            max = std::cmp::max(max, p);
+          }
+          min = std::cmp::min(min, p);
+        }
+        
+        // Secondary neighbors
+        for &offset in &[sec_dir1, -sec_dir1, sec_dir2, -sec_dir2] {
+          let s = i32::cast_from(*ptr_in.offset(offset));
+          if s != cdef_very_large {
+            max = std::cmp::max(max, s);
+          }
+          min = std::cmp::min(min, s);
+          let diff = s - x;
+          sum += sec_taps[k] * constrain_scalar(diff, sec_strength, sec_shift);
+        }
+      }
+      
+      let v = x + ((8 + sum - (sum < 0) as i32) >> 4);
+      dst[i][j] = T::cast_from(std::cmp::min(std::cmp::max(v, min), max) as u32);
+      j += 1;
+    }
+  }
+}
+
+/// Scalar constrain with precomputed shift
+#[inline(always)]
+fn constrain_scalar(diff: i32, threshold: i32, shift: i32) -> i32 {
+  if threshold == 0 {
+    return 0;
+  }
+  let abs_diff = diff.abs();
+  let magnitude = (threshold - (abs_diff >> shift)).clamp(0, abs_diff);
+  if diff < 0 { -magnitude } else { magnitude }
 }
 
 #[cfg(test)]

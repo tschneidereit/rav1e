@@ -104,7 +104,7 @@ jobs:
 
     env:
       CARGO_INCREMENTAL: 0
-      RUSTFLAGS: "-Dwarnings -C target-feature=+simd128"
+      RUSTFLAGS: "-Dwarnings -C target-feature=+simd128,+relaxed-simd"
 
     steps:
       - uses: actions/checkout@v4

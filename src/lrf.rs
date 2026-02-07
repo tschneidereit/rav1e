@@ -24,6 +24,8 @@ use crate::util::{clamp, CastFromPrimitive, ILog, Pixel};
 cfg_if::cfg_if! {
   if #[cfg(nasm_x86_64)] {
     use crate::asm::x86::lrf::*;
+  } else if #[cfg(all(target_family = "wasm", target_feature = "simd128"))] {
+    use crate::asm::wasm32::lrf::*;
   } else {
     use self::rust::*;
   }

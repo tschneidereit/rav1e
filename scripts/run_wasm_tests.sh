@@ -45,7 +45,7 @@ check_deps() {
 build_wasm() {
     info "Building rav1e for wasm32-wasip2..."
     
-    RUSTFLAGS="-C target-feature=+simd128" cargo build \
+    RUSTFLAGS="-C target-feature=+simd128,+relaxed-simd" cargo build \
         --target wasm32-wasip2 \
         --release \
         --no-default-features \

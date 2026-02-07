@@ -74,14 +74,14 @@ pub fn dispatch_predict_intra<T: Pixel>(
         PredictionMode::H_PRED if angle == 180 => {
           pred_h_simd(dst, left_slice, width, height);
         }
-        PredictionMode::SMOOTH_PRED => {
-          pred_smooth_simd(dst, above_slice, left_slice, width, height);
-        }
-        PredictionMode::SMOOTH_V_PRED => {
-          pred_smooth_v_simd(dst, above_slice, left_slice, width, height);
-        }
-        PredictionMode::SMOOTH_H_PRED => {
-          pred_smooth_h_simd(dst, above_slice, left_slice, width, height);
+        PredictionMode::SMOOTH_PRED
+        | PredictionMode::SMOOTH_V_PRED
+        | PredictionMode::SMOOTH_H_PRED => {
+          // Fall back to Rust for smooth - these auto-vectorize well
+          rust::dispatch_predict_intra(
+            mode, variant, dst, tx_size, bit_depth, ac, angle, ief_params,
+            edge_buf, cpu,
+          );
         }
         PredictionMode::PAETH_PRED => {
           pred_paeth_simd(dst, above_slice, left_slice, top_left[0], width, height);
@@ -96,11 +96,50 @@ pub fn dispatch_predict_intra<T: Pixel>(
       }
     }
     PixelType::U16 => {
-      // For HBD, fall back to Rust for now
-      rust::dispatch_predict_intra(
-        mode, variant, dst, tx_size, bit_depth, ac, angle, ief_params, edge_buf,
-        cpu,
-      );
+      // HBD (High Bit Depth / 10-bit) with SIMD
+      match mode {
+        PredictionMode::DC_PRED => {
+          match variant {
+            PredictionVariant::NONE => {
+              pred_dc_128_simd(dst, width, height, bit_depth);
+            }
+            PredictionVariant::LEFT => {
+              pred_dc_left_simd(dst, left_slice, width, height);
+            }
+            PredictionVariant::TOP => {
+              pred_dc_top_simd(dst, above_slice, width, height);
+            }
+            PredictionVariant::BOTH => {
+              pred_dc_simd(dst, above_slice, left_slice, width, height);
+            }
+          }
+        }
+        PredictionMode::V_PRED if angle == 90 => {
+          pred_v_simd(dst, above_slice, width, height);
+        }
+        PredictionMode::H_PRED if angle == 180 => {
+          pred_h_simd(dst, left_slice, width, height);
+        }
+        PredictionMode::PAETH_PRED => {
+          pred_paeth_simd_hbd(dst, above_slice, left_slice, top_left[0], width, height);
+        }
+        PredictionMode::SMOOTH_PRED
+        | PredictionMode::SMOOTH_V_PRED
+        | PredictionMode::SMOOTH_H_PRED => {
+          // Fall back to Rust for smooth - these auto-vectorize well
+          rust::dispatch_predict_intra(
+            mode, variant, dst, tx_size, bit_depth, ac, angle, ief_params,
+            edge_buf, cpu,
+          );
+        }
+        // Fall back to Rust for directional and CFL modes
+        _ => {
+          rust::dispatch_predict_intra(
+            mode, variant, dst, tx_size, bit_depth, ac, angle, ief_params,
+            edge_buf, cpu,
+          );
+        }
+      }
     }
   }
 }
@@ -181,7 +220,7 @@ fn sum_pixels_simd<T: Pixel>(pixels: &[T], count: usize) -> u32 {
       let pixels_u16 = unsafe {
         std::slice::from_raw_parts(pixels.as_ptr() as *const u16, count)
       };
-      sum_u16_scalar(pixels_u16)
+      sum_u16_simd(pixels_u16)
     }
   }
 }
@@ -210,10 +249,37 @@ fn sum_u8_simd(pixels: &[u8]) -> u32 {
   sum
 }
 
-/// Sum u16 values (scalar fallback)
+/// Sum u16 values using SIMD
 #[inline(always)]
-fn sum_u16_scalar(pixels: &[u16]) -> u32 {
-  pixels.iter().map(|&p| p as u32).sum()
+fn sum_u16_simd(pixels: &[u16]) -> u32 {
+  let mut sum = 0u32;
+  let mut i = 0;
+  
+  // Process 8 u16 values at a time (128 bits)
+  while i + 8 <= pixels.len() {
+    unsafe {
+      // Load 8 u16 values
+      let v = v128_load(pixels.as_ptr().add(i) as *const v128);
+      // Split into two i32x4 vectors (zero-extend u16 to u32)
+      let lo = u32x4_extend_low_u16x8(v);
+      let hi = u32x4_extend_high_u16x8(v);
+      // Sum horizontally
+      let sum_lo = u32x4_extract_lane::<0>(lo) + u32x4_extract_lane::<1>(lo) 
+                 + u32x4_extract_lane::<2>(lo) + u32x4_extract_lane::<3>(lo);
+      let sum_hi = u32x4_extract_lane::<0>(hi) + u32x4_extract_lane::<1>(hi)
+                 + u32x4_extract_lane::<2>(hi) + u32x4_extract_lane::<3>(hi);
+      sum += sum_lo + sum_hi;
+    }
+    i += 8;
+  }
+  
+  // Handle remainder
+  while i < pixels.len() {
+    sum += pixels[i] as u32;
+    i += 1;
+  }
+  
+  sum
 }
 
 // ============================================================================
@@ -365,6 +431,94 @@ fn pred_paeth_simd_u8<T: Pixel>(
           v128_and(select_tl, top_left_vec)
         )
       };
+
+      // Extract and store
+      row[c] = T::cast_from(i32x4_extract_lane::<0>(result) as u32);
+      row[c+1] = T::cast_from(i32x4_extract_lane::<1>(result) as u32);
+      row[c+2] = T::cast_from(i32x4_extract_lane::<2>(result) as u32);
+      row[c+3] = T::cast_from(i32x4_extract_lane::<3>(result) as u32);
+
+      c += 4;
+    }
+
+    // Handle remainder with scalar code
+    while c < width {
+      let raw_top: i32 = above[c].into();
+      let p_base = raw_top + raw_left - raw_top_left;
+
+      let p_left = (p_base - raw_left).abs();
+      let p_top = (p_base - raw_top).abs();
+      let p_top_left = (p_base - raw_top_left).abs();
+
+      row[c] = if p_left <= p_top && p_left <= p_top_left {
+        T::cast_from(raw_left)
+      } else if p_top <= p_top_left {
+        T::cast_from(raw_top)
+      } else {
+        T::cast_from(raw_top_left)
+      };
+      c += 1;
+    }
+  }
+}
+
+/// Paeth prediction for HBD (16-bit) pixels using SIMD
+#[inline(always)]
+fn pred_paeth_simd_hbd<T: Pixel>(
+  output: &mut PlaneRegionMut<'_, T>, above: &[T], left: &[T], above_left: T,
+  width: usize, height: usize,
+) {
+  // For HBD the algorithm is identical to U8 version - i32 arithmetic handles
+  // both 8-bit and 10/12-bit pixel values without overflow
+  let raw_top_left: i32 = above_left.into();
+  let top_left_vec = i32x4_splat(raw_top_left);
+
+  for r in 0..height {
+    let row = &mut output[r];
+    let raw_left: i32 = left[height - 1 - r].into();
+    let left_vec = i32x4_splat(raw_left);
+
+    let mut c = 0;
+
+    // Process 4 pixels at a time with SIMD
+    while c + 4 <= width {
+      // Load 4 above (top) values - works for both U8 and U16 through Into<i32>
+      let top_vec = i32x4(
+        above[c].into(), above[c+1].into(),
+        above[c+2].into(), above[c+3].into()
+      );
+
+      // p_base = top + left - top_left
+      let p_base = i32x4_sub(i32x4_add(top_vec, left_vec), top_left_vec);
+
+      // Compute absolute differences
+      let diff_left = i32x4_sub(p_base, left_vec);
+      let p_left = i32x4_abs(diff_left);
+
+      let diff_top = i32x4_sub(p_base, top_vec);
+      let p_top = i32x4_abs(diff_top);
+
+      let diff_top_left = i32x4_sub(p_base, top_left_vec);
+      let p_top_left = i32x4_abs(diff_top_left);
+
+      // Select the value with minimum distance using bitwise ops
+      let left_le_top = i32x4_le(p_left, p_top);
+      let left_le_tl = i32x4_le(p_left, p_top_left);
+      let select_left = v128_and(left_le_top, left_le_tl);
+      
+      let top_le_tl = i32x4_le(p_top, p_top_left);
+      let not_select_left = v128_not(select_left);
+      let select_top = v128_and(not_select_left, top_le_tl);
+      
+      // Bitwise selection: result = (select_left & left) | (select_top & top) | (select_tl & top_left)
+      let select_tl = v128_andnot(v128_or(select_left, select_top), v128_not(i32x4_splat(0)));
+      let result = v128_or(
+        v128_or(
+          v128_and(select_left, left_vec),
+          v128_and(select_top, top_vec)
+        ),
+        v128_and(select_tl, top_left_vec)
+      );
 
       // Extract and store
       row[c] = T::cast_from(i32x4_extract_lane::<0>(result) as u32);
