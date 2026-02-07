@@ -78,6 +78,12 @@ fn clamp_vec(v: v128, range: i32) -> v128 {
   i32x4_min(i32x4_max(v, min_val), max_val)
 }
 
+#[inline(always)]
+fn round_shift_vec(v: v128, shift: u32) -> v128 {
+  let round = i32x4_splat(1 << (shift - 1));
+  i32x4_shr(i32x4_add(v, round), shift)
+}
+
 /// Inverse transform with SIMD acceleration.
 ///
 /// Provides optimized paths for common cases, falls back to Rust for others.
@@ -99,7 +105,6 @@ pub fn inverse_transform_add<T: Pixel>(
         }
       }
       PixelType::U16 => {
-        // 10-bit / HBD pixel path (coefficients are i32)
         match (tx_size, tx_type) {
           (TxSize::TX_4X4, TxType::DCT_DCT) => {
             inverse_transform_add_4x4_dct_simd_hbd(input, output, bd);
@@ -1252,32 +1257,101 @@ fn inverse_transform_add_16x16_dct_simd_hbd<T: Pixel>(
   // Stripe 0 (rows 0-3)
   let (s0_0, s0_1, s0_2, s0_3, s0_4, s0_5, s0_6, s0_7, s0_8, s0_9, s0_10, s0_11, s0_12, s0_13, s0_14, s0_15) = 
     load_stripe_16::<T>(input, 0, 16);
-  let r0_res = idct16_simd(
+  let (r0_0, r0_1, r0_2, r0_3, r0_4, r0_5, r0_6, r0_7, r0_8, r0_9, r0_10, r0_11, r0_12, r0_13, r0_14, r0_15) = idct16_simd(
     s0_0, s0_1, s0_2, s0_3, s0_4, s0_5, s0_6, s0_7, s0_8, s0_9, s0_10, s0_11, s0_12, s0_13, s0_14, s0_15, range
   );
   
   // Stripe 1 (rows 4-7)
   let (s1_0, s1_1, s1_2, s1_3, s1_4, s1_5, s1_6, s1_7, s1_8, s1_9, s1_10, s1_11, s1_12, s1_13, s1_14, s1_15) = 
     load_stripe_16::<T>(input, 4, 16);
-  let r1_res = idct16_simd(
+  let (r1_0, r1_1, r1_2, r1_3, r1_4, r1_5, r1_6, r1_7, r1_8, r1_9, r1_10, r1_11, r1_12, r1_13, r1_14, r1_15) = idct16_simd(
     s1_0, s1_1, s1_2, s1_3, s1_4, s1_5, s1_6, s1_7, s1_8, s1_9, s1_10, s1_11, s1_12, s1_13, s1_14, s1_15, range
   );
   
   // Stripe 2 (rows 8-11)
   let (s2_0, s2_1, s2_2, s2_3, s2_4, s2_5, s2_6, s2_7, s2_8, s2_9, s2_10, s2_11, s2_12, s2_13, s2_14, s2_15) = 
     load_stripe_16::<T>(input, 8, 16);
-  let r2_res = idct16_simd(
+  let (r2_0, r2_1, r2_2, r2_3, r2_4, r2_5, r2_6, r2_7, r2_8, r2_9, r2_10, r2_11, r2_12, r2_13, r2_14, r2_15) = idct16_simd(
     s2_0, s2_1, s2_2, s2_3, s2_4, s2_5, s2_6, s2_7, s2_8, s2_9, s2_10, s2_11, s2_12, s2_13, s2_14, s2_15, range
   );
   
   // Stripe 3 (rows 12-15)
   let (s3_0, s3_1, s3_2, s3_3, s3_4, s3_5, s3_6, s3_7, s3_8, s3_9, s3_10, s3_11, s3_12, s3_13, s3_14, s3_15) = 
     load_stripe_16::<T>(input, 12, 16);
-  let r3_res = idct16_simd(
+  let (r3_0, r3_1, r3_2, r3_3, r3_4, r3_5, r3_6, r3_7, r3_8, r3_9, r3_10, r3_11, r3_12, r3_13, r3_14, r3_15) = idct16_simd(
     s3_0, s3_1, s3_2, s3_3, s3_4, s3_5, s3_6, s3_7, s3_8, s3_9, s3_10, s3_11, s3_12, s3_13, s3_14, s3_15, range
   );
   
   let range2 = (bd.max(10) + 6) as i32;
+  let interm_shift = 2;
+
+  let r0_0 = clamp_vec(round_shift_vec(r0_0, interm_shift), range2);
+  let r0_1 = clamp_vec(round_shift_vec(r0_1, interm_shift), range2);
+  let r0_2 = clamp_vec(round_shift_vec(r0_2, interm_shift), range2);
+  let r0_3 = clamp_vec(round_shift_vec(r0_3, interm_shift), range2);
+  let r0_4 = clamp_vec(round_shift_vec(r0_4, interm_shift), range2);
+  let r0_5 = clamp_vec(round_shift_vec(r0_5, interm_shift), range2);
+  let r0_6 = clamp_vec(round_shift_vec(r0_6, interm_shift), range2);
+  let r0_7 = clamp_vec(round_shift_vec(r0_7, interm_shift), range2);
+  let r0_8 = clamp_vec(round_shift_vec(r0_8, interm_shift), range2);
+  let r0_9 = clamp_vec(round_shift_vec(r0_9, interm_shift), range2);
+  let r0_10 = clamp_vec(round_shift_vec(r0_10, interm_shift), range2);
+  let r0_11 = clamp_vec(round_shift_vec(r0_11, interm_shift), range2);
+  let r0_12 = clamp_vec(round_shift_vec(r0_12, interm_shift), range2);
+  let r0_13 = clamp_vec(round_shift_vec(r0_13, interm_shift), range2);
+  let r0_14 = clamp_vec(round_shift_vec(r0_14, interm_shift), range2);
+  let r0_15 = clamp_vec(round_shift_vec(r0_15, interm_shift), range2);
+
+  let r1_0 = clamp_vec(round_shift_vec(r1_0, interm_shift), range2);
+  let r1_1 = clamp_vec(round_shift_vec(r1_1, interm_shift), range2);
+  let r1_2 = clamp_vec(round_shift_vec(r1_2, interm_shift), range2);
+  let r1_3 = clamp_vec(round_shift_vec(r1_3, interm_shift), range2);
+  let r1_4 = clamp_vec(round_shift_vec(r1_4, interm_shift), range2);
+  let r1_5 = clamp_vec(round_shift_vec(r1_5, interm_shift), range2);
+  let r1_6 = clamp_vec(round_shift_vec(r1_6, interm_shift), range2);
+  let r1_7 = clamp_vec(round_shift_vec(r1_7, interm_shift), range2);
+  let r1_8 = clamp_vec(round_shift_vec(r1_8, interm_shift), range2);
+  let r1_9 = clamp_vec(round_shift_vec(r1_9, interm_shift), range2);
+  let r1_10 = clamp_vec(round_shift_vec(r1_10, interm_shift), range2);
+  let r1_11 = clamp_vec(round_shift_vec(r1_11, interm_shift), range2);
+  let r1_12 = clamp_vec(round_shift_vec(r1_12, interm_shift), range2);
+  let r1_13 = clamp_vec(round_shift_vec(r1_13, interm_shift), range2);
+  let r1_14 = clamp_vec(round_shift_vec(r1_14, interm_shift), range2);
+  let r1_15 = clamp_vec(round_shift_vec(r1_15, interm_shift), range2);
+
+  let r2_0 = clamp_vec(round_shift_vec(r2_0, interm_shift), range2);
+  let r2_1 = clamp_vec(round_shift_vec(r2_1, interm_shift), range2);
+  let r2_2 = clamp_vec(round_shift_vec(r2_2, interm_shift), range2);
+  let r2_3 = clamp_vec(round_shift_vec(r2_3, interm_shift), range2);
+  let r2_4 = clamp_vec(round_shift_vec(r2_4, interm_shift), range2);
+  let r2_5 = clamp_vec(round_shift_vec(r2_5, interm_shift), range2);
+  let r2_6 = clamp_vec(round_shift_vec(r2_6, interm_shift), range2);
+  let r2_7 = clamp_vec(round_shift_vec(r2_7, interm_shift), range2);
+  let r2_8 = clamp_vec(round_shift_vec(r2_8, interm_shift), range2);
+  let r2_9 = clamp_vec(round_shift_vec(r2_9, interm_shift), range2);
+  let r2_10 = clamp_vec(round_shift_vec(r2_10, interm_shift), range2);
+  let r2_11 = clamp_vec(round_shift_vec(r2_11, interm_shift), range2);
+  let r2_12 = clamp_vec(round_shift_vec(r2_12, interm_shift), range2);
+  let r2_13 = clamp_vec(round_shift_vec(r2_13, interm_shift), range2);
+  let r2_14 = clamp_vec(round_shift_vec(r2_14, interm_shift), range2);
+  let r2_15 = clamp_vec(round_shift_vec(r2_15, interm_shift), range2);
+
+  let r3_0 = clamp_vec(round_shift_vec(r3_0, interm_shift), range2);
+  let r3_1 = clamp_vec(round_shift_vec(r3_1, interm_shift), range2);
+  let r3_2 = clamp_vec(round_shift_vec(r3_2, interm_shift), range2);
+  let r3_3 = clamp_vec(round_shift_vec(r3_3, interm_shift), range2);
+  let r3_4 = clamp_vec(round_shift_vec(r3_4, interm_shift), range2);
+  let r3_5 = clamp_vec(round_shift_vec(r3_5, interm_shift), range2);
+  let r3_6 = clamp_vec(round_shift_vec(r3_6, interm_shift), range2);
+  let r3_7 = clamp_vec(round_shift_vec(r3_7, interm_shift), range2);
+  let r3_8 = clamp_vec(round_shift_vec(r3_8, interm_shift), range2);
+  let r3_9 = clamp_vec(round_shift_vec(r3_9, interm_shift), range2);
+  let r3_10 = clamp_vec(round_shift_vec(r3_10, interm_shift), range2);
+  let r3_11 = clamp_vec(round_shift_vec(r3_11, interm_shift), range2);
+  let r3_12 = clamp_vec(round_shift_vec(r3_12, interm_shift), range2);
+  let r3_13 = clamp_vec(round_shift_vec(r3_13, interm_shift), range2);
+  let r3_14 = clamp_vec(round_shift_vec(r3_14, interm_shift), range2);
+  let r3_15 = clamp_vec(round_shift_vec(r3_15, interm_shift), range2);
 
   // Now we have 4 sets of 16 vectors.
   // r0_res.0 = [r0c0, r1c0, r2c0, r3c0]
@@ -1290,17 +1364,17 @@ fn inverse_transform_add_16x16_dct_simd_hbd<T: Pixel>(
   
   // Transpose top-left 4x4 (rows 0-3, cols 0-3)
   // r0_res.0..3 contain rows 0-3 for cols 0..3
-  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_res.0, r0_res.1, r0_res.2, r0_res.3);
+  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_0, r0_1, r0_2, r0_3);
   // t0_0 = [r0c0, r0c1, r0c2, r0c3] -> This is Row 0 (cols 0-3)
   
   // Transpose next 4 rows (rows 4-7, cols 0-3)
-  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_res.0, r1_res.1, r1_res.2, r1_res.3);
+  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_0, r1_1, r1_2, r1_3);
   
   // Transpose next 4 rows (rows 8-11, cols 0-3)
-  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_res.0, r2_res.1, r2_res.2, r2_res.3);
+  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_0, r2_1, r2_2, r2_3);
   
   // Transpose next 4 rows (rows 12-15, cols 0-3)
-  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_res.0, r3_res.1, r3_res.2, r3_res.3);
+  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_0, r3_1, r3_2, r3_3);
   
   // Now assemble inputs for idct16 (cols 0-3)
   // Input 0 = Row 0 (cols 0-3) = t0_0
@@ -1319,10 +1393,10 @@ fn inverse_transform_add_16x16_dct_simd_hbd<T: Pixel>(
   store_stripe_4(output, c0_res, bd, 0); // Stores cols 0-3 for all 16 rows
 
   // Repeat for cols 4-7
-  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_res.4, r0_res.5, r0_res.6, r0_res.7);
-  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_res.4, r1_res.5, r1_res.6, r1_res.7);
-  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_res.4, r2_res.5, r2_res.6, r2_res.7);
-  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_res.4, r3_res.5, r3_res.6, r3_res.7);
+  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_4, r0_5, r0_6, r0_7);
+  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_4, r1_5, r1_6, r1_7);
+  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_4, r2_5, r2_6, r2_7);
+  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_4, r3_5, r3_6, r3_7);
   
   let c1_res = idct16_simd(
     t0_0, t0_1, t0_2, t0_3, t1_0, t1_1, t1_2, t1_3, t2_0, t2_1, t2_2, t2_3, t3_0, t3_1, t3_2, t3_3, range2
@@ -1330,10 +1404,10 @@ fn inverse_transform_add_16x16_dct_simd_hbd<T: Pixel>(
   store_stripe_4(output, c1_res, bd, 4);
 
   // Repeat for cols 8-11
-  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_res.8, r0_res.9, r0_res.10, r0_res.11);
-  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_res.8, r1_res.9, r1_res.10, r1_res.11);
-  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_res.8, r2_res.9, r2_res.10, r2_res.11);
-  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_res.8, r3_res.9, r3_res.10, r3_res.11);
+  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_8, r0_9, r0_10, r0_11);
+  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_8, r1_9, r1_10, r1_11);
+  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_8, r2_9, r2_10, r2_11);
+  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_8, r3_9, r3_10, r3_11);
   
   let c2_res = idct16_simd(
     t0_0, t0_1, t0_2, t0_3, t1_0, t1_1, t1_2, t1_3, t2_0, t2_1, t2_2, t2_3, t3_0, t3_1, t3_2, t3_3, range2
@@ -1341,10 +1415,10 @@ fn inverse_transform_add_16x16_dct_simd_hbd<T: Pixel>(
   store_stripe_4(output, c2_res, bd, 8);
 
   // Repeat for cols 12-15
-  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_res.12, r0_res.13, r0_res.14, r0_res.15);
-  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_res.12, r1_res.13, r1_res.14, r1_res.15);
-  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_res.12, r2_res.13, r2_res.14, r2_res.15);
-  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_res.12, r3_res.13, r3_res.14, r3_res.15);
+  let (t0_0, t0_1, t0_2, t0_3) = transpose4x4(r0_12, r0_13, r0_14, r0_15);
+  let (t1_0, t1_1, t1_2, t1_3) = transpose4x4(r1_12, r1_13, r1_14, r1_15);
+  let (t2_0, t2_1, t2_2, t2_3) = transpose4x4(r2_12, r2_13, r2_14, r2_15);
+  let (t3_0, t3_1, t3_2, t3_3) = transpose4x4(r3_12, r3_13, r3_14, r3_15);
   
   let c3_res = idct16_simd(
     t0_0, t0_1, t0_2, t0_3, t1_0, t1_1, t1_2, t1_3, t2_0, t2_1, t2_2, t2_3, t3_0, t3_1, t3_2, t3_3, range2
@@ -1377,7 +1451,7 @@ fn store_stripe_4<T: Pixel>(
     // `vals.1` -> `OutputRow1`.
     
     let max_pix = (1 << bd) - 1;
-    let round_const = i32x4_splat(32); // 1 << (6-1)
+    let round_const = i32x4_splat(8); // 1 << (4-1)
     
     let vecs = [
         vals.0, vals.1, vals.2, vals.3, vals.4, vals.5, vals.6, vals.7,
@@ -1386,7 +1460,7 @@ fn store_stripe_4<T: Pixel>(
     
     for (r, v) in vecs.iter().enumerate() {
       // Shift and add
-      let res = i32x4_shr(i32x4_add(*v, round_const), 6);
+      let res = i32x4_shr(i32x4_add(*v, round_const), 4);
       
       let out_row = &mut output[r];
       let val0 = i32x4_extract_lane::<0>(res);
