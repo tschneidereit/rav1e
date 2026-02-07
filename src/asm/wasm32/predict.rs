@@ -510,15 +510,27 @@ fn pred_paeth_simd_hbd<T: Pixel>(
       let not_select_left = v128_not(select_left);
       let select_top = v128_and(not_select_left, top_le_tl);
       
-      // Bitwise selection: result = (select_left & left) | (select_top & top) | (select_tl & top_left)
-      let select_tl = v128_andnot(v128_or(select_left, select_top), v128_not(i32x4_splat(0)));
-      let result = v128_or(
+      // Use relaxed laneselect if available for faster blending
+      #[cfg(target_feature = "relaxed-simd")]
+      let result = {
+        // First select between left and top_left based on select_left
+        let temp = i32x4_relaxed_laneselect(left_vec, top_left_vec, select_left);
+        // Then select between that and top based on select_top
+        i32x4_relaxed_laneselect(top_vec, temp, select_top)
+      };
+      
+      #[cfg(not(target_feature = "relaxed-simd"))]
+      let result = {
+        // Bitwise selection: result = (select_left & left) | (select_top & top) | (select_tl & top_left)
+        let select_tl = v128_andnot(v128_or(select_left, select_top), v128_not(i32x4_splat(0)));
         v128_or(
-          v128_and(select_left, left_vec),
-          v128_and(select_top, top_vec)
-        ),
-        v128_and(select_tl, top_left_vec)
-      );
+          v128_or(
+            v128_and(select_left, left_vec),
+            v128_and(select_top, top_vec)
+          ),
+          v128_and(select_tl, top_left_vec)
+        )
+      };
 
       // Extract and store
       row[c] = T::cast_from(i32x4_extract_lane::<0>(result) as u32);
